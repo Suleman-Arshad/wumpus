@@ -2,6 +2,10 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import random
 import re
+import pickle
+import os
+
+GAME_FILE = os.path.join(os.sep, "tmp", "game.pkl")
 
 app = Flask(__name__)
 CORS(app)
@@ -65,7 +69,6 @@ class PropositionalLogic:
         self.clauses = []
         self.step_counter = 0
 
-    # Public API
     def tell(self, sentence: str):
         for clause in self._to_cnf(sentence):
             normalized = frozenset(l.strip() for l in clause if l.strip())
@@ -73,9 +76,8 @@ class PropositionalLogic:
                 self.clauses.append(normalized)
 
     def ask(self, query: str) -> bool:
-        """Prove query by refutation: add ¬query to a temp KB and check for contradiction."""
         temp = PropositionalLogic()
-        temp.clauses = list(self.clauses)        # share frozen sets
+        temp.clauses = list(self.clauses)
         temp.step_counter = self.step_counter
         negated_clauses = self._negate_query_to_cnf(query)
         for clause in negated_clauses:
@@ -83,20 +85,10 @@ class PropositionalLogic:
             if normalized:
                 temp.clauses.append(normalized)
         result = temp._resolution_refutation()
-        self.step_counter = temp.step_counter   # propagate counter back
+        self.step_counter = temp.step_counter
         return result
 
-    # ------------------------------------------------------------------
-    # Query negation – correctly handles ¬P ∧ ¬W  →  negate each literal
-    # robustly using the full CNF pipeline so compound literals work too.
-    # ------------------------------------------------------------------
     def _negate_query_to_cnf(self, query: str):
-        """
-        query is a conjunction of literals, e.g. "¬P_1,2 ∧ ¬W_1,2".
-        Its negation is a disjunction of the negated literals:
-            P_1,2 ∨ W_1,2
-        We convert that disjunction through the full CNF pipeline.
-        """
         parts = [p.strip() for p in re.split(r"\s*∧\s*", query) if p.strip()]
         negated_parts = []
         for p in parts:
@@ -105,16 +97,11 @@ class PropositionalLogic:
                 negated_parts.append(p[1:])
             else:
                 negated_parts.append(f"¬{p}")
-        # Form the disjunction and push through CNF converter
         disj = " ∨ ".join(f"({pt})" for pt in negated_parts)
         return self._to_cnf(disj)
 
-    # ------------------------------------------------------------------
-    # Resolution refutation with tautology / subsumption pruning
-    # ------------------------------------------------------------------
     def _resolution_refutation(self) -> bool:
-        clauses = list(dict.fromkeys(self.clauses))   # deduplicate, preserve order
-        # Tautology filter: discard clauses containing both p and ¬p
+        clauses = list(dict.fromkeys(self.clauses))
         clauses = [c for c in clauses if not self._is_tautology(c)]
         seen = set(clauses)
 
@@ -128,13 +115,13 @@ class PropositionalLogic:
                     resolvents = self._resolve(clauses[i], clauses[j])
                     for res in resolvents:
                         if len(res) == 0:
-                            return True          # empty clause → contradiction
+                            return True
                         fr = frozenset(res)
                         if fr not in seen and not self._is_tautology(fr):
                             new.add(fr)
 
             if not new:
-                return False                     # saturated without contradiction
+                return False
 
             for c in new:
                 seen.add(c)
@@ -142,7 +129,6 @@ class PropositionalLogic:
 
     @staticmethod
     def _is_tautology(clause) -> bool:
-        """A clause is a tautology if it contains both p and ¬p."""
         for lit in clause:
             if negate_literal(lit) in clause:
                 return True
@@ -157,9 +143,6 @@ class PropositionalLogic:
                 resolvents.append(res)
         return resolvents
 
-    # ------------------------------------------------------------------
-    # CNF conversion – now handles De Morgan's law for ¬(compound)
-    # ------------------------------------------------------------------
     def _to_cnf(self, sentence: str):
         sentence = strip_outer_parens(sentence.strip())
         return self._cnf_expr(sentence)
@@ -167,52 +150,42 @@ class PropositionalLogic:
     def _cnf_expr(self, expr: str):
         expr = strip_outer_parens(expr)
 
-        # ── Biconditional ──────────────────────────────────────────────
         if "⇔" in expr:
             left, right = [x.strip() for x in expr.split("⇔", 1)]
             return self._cnf_expr(f"({left} → {right}) ∧ ({right} → {left})")
 
-        # ── Implication ────────────────────────────────────────────────
         if "→" in expr:
             left, right = [x.strip() for x in expr.split("→", 1)]
             return self._cnf_expr(f"¬({left}) ∨ ({right})")
 
-        # ── Negation – apply De Morgan's law for compound subexpressions ─
         if expr.startswith("¬"):
             inner = strip_outer_parens(expr[1:])
 
-            # ¬¬A  →  A
             if inner.startswith("¬"):
                 return self._cnf_expr(inner[1:])
 
-            # ¬(A ∧ B)  →  ¬A ∨ ¬B
             and_parts = split_top_level(inner, "∧")
             if len(and_parts) > 1:
                 negated = " ∨ ".join(f"¬({p})" for p in and_parts)
                 return self._cnf_expr(negated)
 
-            # ¬(A ∨ B)  →  ¬A ∧ ¬B
             or_parts = split_top_level(inner, "∨")
             if len(or_parts) > 1:
                 negated = " ∧ ".join(f"¬({p})" for p in or_parts)
                 return self._cnf_expr(negated)
 
-            # ¬(A → B)  →  A ∧ ¬B
             if "→" in inner:
                 left, right = [x.strip() for x in inner.split("→", 1)]
                 return self._cnf_expr(f"({left}) ∧ ¬({right})")
 
-            # ¬(A ⇔ B)  →  (A ∧ ¬B) ∨ (¬A ∧ B)
             if "⇔" in inner:
                 left, right = [x.strip() for x in inner.split("⇔", 1)]
                 return self._cnf_expr(
                     f"(({left}) ∧ ¬({right})) ∨ (¬({left}) ∧ ({right}))"
                 )
 
-            # ¬literal – base case, keep as-is
             return [[expr]]
 
-        # ── Conjunction ────────────────────────────────────────────────
         and_parts = split_top_level(expr, "∧")
         if len(and_parts) > 1:
             clauses = []
@@ -220,7 +193,6 @@ class PropositionalLogic:
                 clauses.extend(self._cnf_expr(part))
             return clauses
 
-        # ── Disjunction ────────────────────────────────────────────────
         or_parts = split_top_level(expr, "∨")
         if len(or_parts) > 1:
             left = self._cnf_expr(or_parts[0])
@@ -229,15 +201,13 @@ class PropositionalLogic:
                 left = self._distribute_or(left, right)
             return left
 
-        # ── Base case: atom ────────────────────────────────────────────
         return [[expr]]
 
     def _distribute_or(self, cnf1, cnf2):
-        """Distribute OR over AND: (A∧B) ∨ (C∧D) = (A∨C)∧(A∨D)∧(B∨C)∧(B∨D)"""
         result = []
         for c1 in cnf1:
             for c2 in cnf2:
-                clause = list(dict.fromkeys(c1 + c2))   # preserve order, deduplicate
+                clause = list(dict.fromkeys(c1 + c2))
                 result.append(clause)
         return result
 
@@ -256,8 +226,8 @@ class WumpusWorld:
         self.pits = set()
         self.wumpus = None
         self.percepts = []
-        self.game_over = False          # FIX: track death
-        self.game_over_reason = None    # "pit" | "wumpus" | None
+        self.game_over = False
+        self.game_over_reason = None
         self.kb = PropositionalLogic()
         self._generate_world()
         self._initialize_start_cell()
@@ -311,7 +281,6 @@ class WumpusWorld:
             self.kb.tell(f"B_{cell}")
         else:
             self.kb.tell(f"¬B_{cell}")
-            # No breeze → no pits in any adjacent cell
             for nr, nc in adj_cells:
                 self.kb.tell(f"¬P_{nr},{nc}")
                 self.confirmed_safe.add((nr, nc))
@@ -320,7 +289,6 @@ class WumpusWorld:
             self.kb.tell(f"S_{cell}")
         else:
             self.kb.tell(f"¬S_{cell}")
-            # No stench → Wumpus not in any adjacent cell
             for nr, nc in adj_cells:
                 self.kb.tell(f"¬W_{nr},{nc}")
 
@@ -335,7 +303,6 @@ class WumpusWorld:
         self._tell_kb_from_percepts(r, c, self.percepts)
 
     def is_safe(self, r, c) -> bool:
-        """Return True if KB can prove the cell is free of pits and Wumpus."""
         if (r, c) in self.confirmed_safe or (r, c) in self.visited:
             return True
         if (r, c) == (0, 0):
@@ -363,12 +330,6 @@ class WumpusWorld:
         return moves
 
     def move(self, direction: str):
-        """
-        FIX: Only execute the move if the game is still active.
-        After moving, check for death (pit / wumpus).
-        Safe-move enforcement is advisory – the agent CAN move into unknown
-        cells but the KB flags them as potentially dangerous.
-        """
         if self.game_over:
             return self.get_state()
 
@@ -384,13 +345,11 @@ class WumpusWorld:
         elif direction == "right" and c < self.cols - 1:
             nr, nc = r, c + 1
         else:
-            # Out-of-bounds direction – do nothing
             return self.get_state()
 
         self.agent_pos = [nr, nc]
         self.visited.add((nr, nc))
 
-        # FIX: Check death BEFORE telling KB / sensing
         if (nr, nc) in self.pits:
             self.game_over = True
             self.game_over_reason = "pit"
@@ -401,7 +360,6 @@ class WumpusWorld:
             self.game_over_reason = "wumpus"
             return self.get_state()
 
-        # Safe cell – add to confirmed safe and update KB
         self.confirmed_safe.add((nr, nc))
         self._update_current_cell_knowledge()
         return self.get_state()
@@ -434,41 +392,56 @@ class WumpusWorld:
             "inference_steps": self.kb.step_counter,
             "visited_count": len(self.visited),
             "confirmed_safe_count": len(self.confirmed_safe),
-            "game_over": self.game_over,                    # FIX: expose to frontend
-            "game_over_reason": self.game_over_reason,      # FIX: "pit" | "wumpus" | None
+            "game_over": self.game_over,
+            "game_over_reason": self.game_over_reason,
         }
+
+
+# ---------------------------------------------------------------------------
+# Game persistence helpers
+# ---------------------------------------------------------------------------
+
+def save_game(game):
+    with open(GAME_FILE, "wb") as f:
+        pickle.dump(game, f)
+
+
+def load_game():
+    if os.path.exists(GAME_FILE):
+        with open(GAME_FILE, "rb") as f:
+            return pickle.load(f)
+    return None
 
 
 # ---------------------------------------------------------------------------
 # Flask routes
 # ---------------------------------------------------------------------------
 
-game = None
-
-
 @app.route("/api/start_game", methods=["POST"])
 def start_game():
-    global game
     data = request.json or {}
     rows = max(3, min(10, int(data.get("rows", 4))))
     cols = max(3, min(10, int(data.get("cols", 4))))
     game = WumpusWorld(rows, cols)
+    save_game(game)
     return jsonify(game.get_state())
 
 
 @app.route("/api/move", methods=["POST"])
 def move():
-    global game
+    game = load_game()
     if not game:
         return jsonify({"error": "Game not started"}), 400
     data = request.json or {}
     direction = data.get("direction", "up")
-    return jsonify(game.move(direction))
+    state = game.move(direction)
+    save_game(game)
+    return jsonify(state)
 
 
 @app.route("/api/get_safe_moves", methods=["GET"])
 def get_safe_moves():
-    global game
+    game = load_game()
     if not game:
         return jsonify({"error": "Game not started"}), 400
     return jsonify({"safe_moves": game.get_safe_moves()})
@@ -476,8 +449,8 @@ def get_safe_moves():
 
 @app.route("/api/reset", methods=["POST"])
 def reset():
-    global game
-    game = None
+    if os.path.exists(GAME_FILE):
+        os.remove(GAME_FILE)
     return jsonify({"message": "reset"})
 
 

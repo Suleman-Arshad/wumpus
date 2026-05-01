@@ -16,7 +16,8 @@ function App() {
   const [gameStarted, setGameStarted] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const apiBase = 'http://localhost:5000';
+  //const apiBase = 'http://localhost:5000';
+  const apiBase = '/api';
 
   const startGame = useCallback(async () => {
     setLoading(true);

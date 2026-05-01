@@ -446,7 +446,7 @@ class WumpusWorld:
 game = None
 
 
-@app.route("/start_game", methods=["POST"])
+@app.route("/api/start_game", methods=["POST"])
 def start_game():
     global game
     data = request.json or {}
@@ -456,7 +456,7 @@ def start_game():
     return jsonify(game.get_state())
 
 
-@app.route("/move", methods=["POST"])
+@app.route("/api/move", methods=["POST"])
 def move():
     global game
     if not game:
@@ -466,7 +466,7 @@ def move():
     return jsonify(game.move(direction))
 
 
-@app.route("/get_safe_moves", methods=["GET"])
+@app.route("/api/get_safe_moves", methods=["GET"])
 def get_safe_moves():
     global game
     if not game:
@@ -474,7 +474,7 @@ def get_safe_moves():
     return jsonify({"safe_moves": game.get_safe_moves()})
 
 
-@app.route("/reset", methods=["POST"])
+@app.route("/api/reset", methods=["POST"])
 def reset():
     global game
     game = None

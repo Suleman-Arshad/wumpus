@@ -2,6 +2,13 @@
   "version": 2,
   "builds": [
     {
+      "src": "wumpus-agent/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "build"
+      }
+    },
+    {
       "src": "api/app.py",
       "use": "@vercel/python"
     }
@@ -10,6 +17,10 @@
     {
       "src": "/api/(.*)",
       "dest": "api/app.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "wumpus-agent/$1"
     }
   ]
 }
